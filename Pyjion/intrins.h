@@ -23,8 +23,8 @@
 *
 */
 
-#ifndef __INTRINS_H__
-#define __INTRINS_H__
+#ifndef INTRINS_H
+#define INTRINS_H
 
 #include <Python.h>
 #include <frameobject.h>
@@ -80,6 +80,8 @@ PyObject* PyJit_UnaryInvert(PyObject* value);
 PyObject* PyJit_ListAppend(PyObject* list, PyObject* value);
 
 PyObject* PyJit_SetAdd(PyObject* set, PyObject* value);
+
+int PyJit_UpdateSet(PyObject* set, PyObject* value);
 
 PyObject* PyJit_MapAdd(PyObject*map, PyObject* value, PyObject*key);
 
@@ -178,7 +180,13 @@ int PyJit_Raise(PyObject *exc, PyObject *cause);
 
 PyObject* PyJit_LoadClassDeref(PyFrameObject* frame, size_t oparg);
 
+int PyJit_ExtendList(PyObject *list, PyObject *extension);
+
+PyObject* PyJit_ListToTuple(PyObject *list);
+
 int PyJit_StoreMap(PyObject *key, PyObject *value, PyObject* map);
+
+int PyJit_DictUpdate(PyObject *dict, PyObject* other);
 
 int PyJit_StoreSubscr(PyObject* value, PyObject *container, PyObject *index);
 
@@ -230,8 +238,8 @@ int PyJit_DeleteName(PyFrameObject* f, PyObject* name);
 PyObject* PyJit_Is(PyObject* lhs, PyObject* rhs);
 PyObject* PyJit_IsNot(PyObject* lhs, PyObject* rhs);
 
-bool PyJit_Is_Bool(PyObject* lhs, PyObject* rhs);
-bool PyJit_IsNot_Bool(PyObject* lhs, PyObject* rhs);
+int PyJit_Is_Bool(PyObject* lhs, PyObject* rhs);
+int PyJit_IsNot_Bool(PyObject* lhs, PyObject* rhs);
 
 PyObject* Call0(PyObject *target);
 PyObject* Call1(PyObject *target, PyObject* arg0);
@@ -248,6 +256,7 @@ void PyJit_DecRef(PyObject* value);
 
 void PyJit_FloatDivideByZero();
 
+PyObject* PyJit_UnboxInt_Tagged(PyObject* value);
 PyObject* PyJit_Add_Int(PyObject *left, PyObject *right);
 PyObject* PyJit_Subtract_Int(PyObject *left, PyObject *right);
 PyObject* PyJit_BinaryAnd_Int(PyObject *left, PyObject *right);
@@ -263,12 +272,14 @@ PyObject* PyJit_Power_Int(PyObject *left, PyObject *right);
 
 PyObject* PyJit_BoxTaggedPointer(PyObject* value);
 PyObject* PyJit_UnaryNegative_Int(PyObject*value);
-bool PyJit_UnaryNot_Int_PushBool(PyObject*value);
+int PyJit_UnaryNot_Int_PushBool(PyObject*value);
 
-bool PyJit_Equals_Int(PyObject *left, PyObject *right);
-bool PyJit_LessThan_Int(PyObject *left, PyObject *right);
-bool PyJit_LessThanEquals_Int(PyObject *left, PyObject *right);
-bool PyJit_NotEquals_Int(PyObject *left, PyObject *right);
-bool PyJit_GreaterThan_Int(PyObject *left, PyObject *right);
-bool PyJit_GreaterThanEquals_Int(PyObject *left, PyObject *right);
+int PyJit_Equals_Int(PyObject *left, PyObject *right);
+int PyJit_LessThan_Int(PyObject *left, PyObject *right);
+int PyJit_LessThanEquals_Int(PyObject *left, PyObject *right);
+int PyJit_NotEquals_Int(PyObject *left, PyObject *right);
+int PyJit_GreaterThan_Int(PyObject *left, PyObject *right);
+int PyJit_GreaterThanEquals_Int(PyObject *left, PyObject *right);
+
+int PyJit_Int_ToFloat(PyObject* in, double*out);
 #endif

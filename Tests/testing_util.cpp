@@ -23,6 +23,30 @@
 *
 */
 
-#include "cee.h"
-#include "jitinfo.h"
+/**
+  Testing utility code.
+*/
 
+#include "stdafx.h"
+#include "catch.hpp"
+#include "testing_util.h"
+#include <Python.h>
+#include <util.h>
+
+PyCodeObject* CompileCode(const char* code) {
+    auto globals = PyObject_ptr(PyDict_New());
+    auto builtins = PyThreadState_GET()->interp->builtins;
+    PyDict_SetItemString(globals.get(), "__builtins__", builtins);
+
+    auto locals = PyObject_ptr(PyDict_New());
+    PyRun_String(code, Py_file_input, globals.get(), locals.get());
+    if (PyErr_Occurred()) {
+        PyErr_Print();
+        FAIL("error occurred during Python compilation");
+        return nullptr;
+    }
+    auto func = PyObject_ptr(PyObject_GetItem(locals.get(), PyUnicode_FromString("f")));
+    auto codeObj = (PyCodeObject*)PyObject_GetAttrString(func.get(), "__code__");
+
+    return codeObj;
+}

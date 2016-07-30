@@ -23,8 +23,8 @@
 *
 */
 
-#ifndef __PYCOMP_H__
-#define __PYCOMP_H__
+#ifndef PYCOMP_H
+#define PYCOMP_H
 
 #include <stdint.h>
 #include <windows.h>
@@ -164,6 +164,15 @@
 #define METHOD_GREATER_THAN_EQUALS_INT_TOKEN	0x0000006A
 #define METHOD_PERIODIC_WORK                    0x0000006B
 
+#define METHOD_EXTENDLIST_TOKEN                 0x0000006C
+#define METHOD_LISTTOTUPLE_TOKEN                0x0000006D
+#define METHOD_SETUPDATE_TOKEN                  0x0000006E
+#define METHOD_DICTUPDATE_TOKEN                 0x0000006F
+#define METHOD_UNBOX_LONG_TAGGED                0x00000070
+#define METHOD_UNBOX_FLOAT                      0x00000071
+
+#define METHOD_INT_TO_FLOAT					    0x00000072
+
 // call helpers
 #define METHOD_CALL0_TOKEN		0x00010000
 #define METHOD_CALL1_TOKEN		0x00010001
@@ -228,9 +237,9 @@ class PythonCompiler : public IPythonCompiler {
 public:
     PythonCompiler(PyCodeObject *code);
 
-    virtual void emit_rot_two();
+    virtual void emit_rot_two(LocalKind kind = LK_Pointer);
 
-    virtual void emit_rot_three();
+    virtual void emit_rot_three(LocalKind kind = LK_Pointer);
 
     virtual void emit_pop_top();
 
@@ -265,11 +274,15 @@ public:
 
     virtual void emit_new_list(size_t argCnt);
     virtual void emit_list_store(size_t argCnt);
+    virtual void emit_list_extend();
+    virtual void emit_list_to_tuple();
 
     virtual void emit_new_set();
+    virtual void emit_set_extend();
     virtual void emit_dict_store();
 
     virtual void emit_new_dict(size_t size);
+    virtual void emit_map_extend();
 
     virtual void emit_build_slice();
 
@@ -323,6 +336,7 @@ public:
     virtual void emit_store_local(Local local);
 
     virtual void emit_load_local(Local local);
+    virtual void emit_load_local_addr(Local local);
     virtual void emit_load_and_free_local(Local local);
     virtual Local emit_define_local(bool cache);
     virtual Local emit_define_local(LocalKind kind = LK_Pointer);
@@ -346,6 +360,7 @@ public:
     virtual void emit_binary_float(int opcode);
     virtual void emit_binary_tagged_int(int opcode);
     virtual void emit_binary_object(int opcode);
+    virtual void emit_tagged_int_to_float();
 
     virtual void emit_in_push_int();
     virtual void emit_in();
@@ -374,6 +389,8 @@ public:
     virtual void emit_int(int value);
     virtual void emit_float(double value);
     virtual void emit_tagged_int(ssize_t value);
+    virtual void emit_unbox_int_tagged();
+    virtual void emit_unbox_float();
     virtual void emit_ptr(void *value);
     virtual void emit_bool(bool value);
     virtual void emit_py_object(PyObject* value);

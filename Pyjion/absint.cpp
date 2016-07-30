@@ -42,6 +42,7 @@ AbstractInterpreter::AbstractInterpreter(PyCodeObject *code, IPythonCompiler* co
         m_retValue = comp->emit_define_local();
         m_errorCheckLocal = comp->emit_define_local();
     }
+    init_starting_state();
 }
 
 AbstractInterpreter::~AbstractInterpreter() {
@@ -162,6 +163,17 @@ bool AbstractInterpreter::preprocess() {
     return true;
 }
 
+void AbstractInterpreter::set_local_type(int index, AbstractValueKind kind) {
+    auto& lastState = m_startStates[0];
+    if (kind == AVK_Integer || kind == AVK_Float) {
+        // Replace our starting state with a local which has a known source
+        // so that we know it's boxed...
+        auto localInfo = AbstractLocalInfo(to_abstract(kind));
+        localInfo.ValueInfo.Sources = new_source(new LocalSource());
+        lastState.replace_local(index, localInfo);
+    }
+}
+
 void AbstractInterpreter::init_starting_state() {
     InterpreterState lastState = InterpreterState(m_code->co_nlocals);
 
@@ -191,8 +203,6 @@ bool AbstractInterpreter::interpret() {
     if (!preprocess()) {
         return false;
     }
-
-    init_starting_state();
 
     // walk all the blocks in the code one by one, analyzing them, and enqueing any
     // new blocks that we encounter from branches.
@@ -225,29 +235,38 @@ bool AbstractInterpreter::interpret() {
                 case NOP: break;
                 case ROT_TWO:
                 {
-                    // ROT_TWO currently assumes we have native ints on the stack,
-                    // so we force escape here...  We should fix that up in the future
-                    // and use pop_no_escape
-                    auto tmp = lastState.pop();
-                    auto second = lastState.pop();
-                    lastState.push(tmp);
+                    auto top = lastState.pop_no_escape();
+                    auto second = lastState.pop_no_escape();
+
+                    auto sources = AbstractSource::combine(top.Sources, second.Sources);
+                    m_opcodeSources[opcodeIndex] = sources;
+
+                    if (top.Value->kind() != second.Value->kind()) {
+                        top.escapes();
+                        second.escapes();
+                    }
+
+                    lastState.push(top);
                     lastState.push(second);
-                    
-                    // When issue #88 goes away this code can be brought back, and the above
-                    // code can be removed.
-                    //auto tmp = lastState[lastState.stack_size() - 1];
-                    //lastState[lastState.stack_size() - 1] = lastState[lastState.stack_size() - 2];
-                    //lastState[lastState.stack_size() - 2] = tmp;
                     break;
                 }
                 case ROT_THREE:
                 {
-                    // ROT_THREE currently assumes we have native ints on the stack,
-                    // so we force escape here...  We should fix that up in the future
-                    // and use pop_no_escape
-                    auto top = lastState.pop();
-                    auto second = lastState.pop();
-                    auto third = lastState.pop();
+                    auto top = lastState.pop_no_escape();
+                    auto second = lastState.pop_no_escape();
+                    auto third = lastState.pop_no_escape();
+
+                    auto sources = AbstractSource::combine(
+                        top.Sources,
+                        AbstractSource::combine(second.Sources, third.Sources));
+                    m_opcodeSources[opcodeIndex] = sources;
+
+                    if (top.Value->kind() != second.Value->kind()
+                        || top.Value->kind() != third.Value->kind()) {
+                        top.escapes();
+                        second.escapes();
+                        third.escapes();
+                    }
 
                     lastState.push(top);
                     lastState.push(third);
@@ -679,6 +698,13 @@ bool AbstractInterpreter::interpret() {
                         sources
                         );
 
+                    // TODO: The code generator currently assumes it is *always* dealing
+                    // with an object (i.e. not an unboxed value).  Support should be
+                    // added to the code generator for dealing with unboxed values.  The
+                    // code below that forces an escape should then be removed.
+                    if (opcode == UNARY_INVERT)
+                        one.escapes();
+
                     lastState.push(AbstractValueWithSources(unaryRes, sources));
                     break;
                 }
@@ -946,7 +972,43 @@ AbstractValue* AbstractInterpreter::to_abstract(PyObject*value) {
     else if (PyComplex_CheckExact(value)) {
         return &Complex;
     }
+    else if (PyFunction_Check(value)) {
+        return &Function;
+    }
 
+
+    return &Any;
+}
+
+AbstractValue* AbstractInterpreter::to_abstract(AbstractValueKind kind) {
+    switch (kind) {
+        case AVK_None:
+            return &None;
+        case AVK_Integer:
+            return &Integer;
+        case AVK_String:
+            return &String;
+        case AVK_List:
+            return &List;
+        case AVK_Dict:
+            return &Dict;
+        case AVK_Tuple:
+            return &Tuple;
+        case AVK_Bool:
+            return &Bool;
+        case AVK_Float:
+            return &Float;
+        case AVK_Bytes:
+            return &Bytes;
+        case AVK_Set:
+            return &Set;
+        case AVK_Complex:
+            return &Complex;
+        case AVK_Function:
+            return &Function;
+        case AVK_Slice:
+            return &Slice;
+    }
 
     return &Any;
 }
@@ -1527,6 +1589,12 @@ void AbstractInterpreter::build_tuple(size_t argCnt) {
     }
 }
 
+void AbstractInterpreter::extend_tuple(size_t argCnt) {
+    extend_list(argCnt);
+    m_comp->emit_list_to_tuple();
+    error_check("extend tuple failed");
+}
+
 void AbstractInterpreter::build_list(size_t argCnt) {
     m_comp->emit_new_list(argCnt);
     error_check("build list failed");
@@ -1536,6 +1604,39 @@ void AbstractInterpreter::build_list(size_t argCnt) {
     dec_stack(argCnt);
 }
 
+void AbstractInterpreter::extend_list_recursively(Local listTmp, size_t argCnt) {
+    if (argCnt == 0) {
+        return;
+    }
+
+    auto valueTmp = m_comp->emit_define_local();
+    m_comp->emit_store_local(valueTmp);
+    dec_stack();
+
+    extend_list_recursively(listTmp, --argCnt);
+
+    m_comp->emit_load_local(listTmp);
+    m_comp->emit_load_local(valueTmp);
+
+    m_comp->emit_list_extend();
+    int_error_check("list extend failed");
+
+    m_comp->emit_free_local(valueTmp);
+}
+
+void AbstractInterpreter::extend_list(size_t argCnt) {
+    _ASSERTE(argCnt > 0);
+
+    m_comp->emit_new_list(0);
+    error_check("new list failed");
+
+    auto listTmp = m_comp->emit_define_local();
+    m_comp->emit_store_local(listTmp);
+
+    extend_list_recursively(listTmp, argCnt);
+
+    m_comp->emit_load_and_free_local(listTmp);
+}
 
 void AbstractInterpreter::build_set(size_t argCnt) {
     m_comp->emit_new_set();
@@ -1577,6 +1678,39 @@ void AbstractInterpreter::build_set(size_t argCnt) {
     inc_stack();
 }
 
+void AbstractInterpreter::extend_set_recursively(Local setTmp, size_t argCnt) {
+    if (argCnt == 0) {
+        return;
+    }
+
+    auto valueTmp = m_comp->emit_define_local();
+    m_comp->emit_store_local(valueTmp);
+    dec_stack();
+
+    extend_set_recursively(setTmp, --argCnt);
+
+    m_comp->emit_load_local(setTmp);
+    m_comp->emit_load_local(valueTmp);
+
+    m_comp->emit_set_extend();
+    int_error_check("set extend failed");
+
+    m_comp->emit_free_local(valueTmp);
+}
+
+void AbstractInterpreter::extend_set(size_t argCnt) {
+    _ASSERTE(argCnt > 0);
+
+    m_comp->emit_new_set();
+    error_check("new set failed");
+
+    auto setTmp = m_comp->emit_define_local();
+    m_comp->emit_store_local(setTmp);
+
+    extend_set_recursively(setTmp, argCnt);
+
+    m_comp->emit_load_and_free_local(setTmp);
+}
 
 void AbstractInterpreter::build_map(size_t  argCnt) {
     m_comp->emit_new_dict(argCnt);
@@ -1594,6 +1728,40 @@ void AbstractInterpreter::build_map(size_t  argCnt) {
         }
         m_comp->emit_load_and_free_local(map);
     }
+}
+
+void AbstractInterpreter::extend_map_recursively(Local dictTmp, size_t argCnt) {
+    if (argCnt == 0) {
+        return;
+    }
+
+    auto valueTmp = m_comp->emit_define_local();
+    m_comp->emit_store_local(valueTmp);
+    dec_stack();
+
+    extend_map_recursively(dictTmp, --argCnt);
+
+    m_comp->emit_load_local(dictTmp);
+    m_comp->emit_load_local(valueTmp);
+
+    m_comp->emit_map_extend();
+    int_error_check("map extend failed");
+
+    m_comp->emit_free_local(valueTmp);
+}
+
+void AbstractInterpreter::extend_map(size_t argCnt) {
+    _ASSERTE(argCnt > 0);
+
+    m_comp->emit_new_dict(0);
+    error_check("new map failed");
+
+    auto dictTmp = m_comp->emit_define_local();
+    m_comp->emit_store_local(dictTmp);
+
+    extend_map_recursively(dictTmp, argCnt);
+
+    m_comp->emit_load_and_free_local(dictTmp);
 }
 
 void AbstractInterpreter::make_function(int posdefaults, int kwdefaults, int num_annotations, bool isClosure) {
@@ -1781,6 +1949,22 @@ JittedCode* AbstractInterpreter::compile_worker() {
             vector<bool>()
         )
     );
+
+    for (size_t i = 0; i < m_code->co_argcount + m_code->co_kwonlyargcount; i++) {
+        auto local = get_local_info(0, i);
+        if (!local.ValueInfo.needs_boxing()) {
+            m_comp->emit_load_fast(i);
+
+            if (local.ValueInfo.Value->kind() == AVK_Float) {
+                m_comp->emit_unbox_float();
+                m_comp->emit_store_local(get_optimized_local(i, AVK_Float));
+            }
+            else if (local.ValueInfo.Value->kind() == AVK_Integer) {
+                m_comp->emit_unbox_int_tagged();
+                m_comp->emit_store_local(get_optimized_local(i, AVK_Any));
+            }
+        }
+    }
     
     for (int curByte = 0; curByte < m_size; curByte++) {
         auto opcodeIndex = curByte;
@@ -1809,26 +1993,44 @@ JittedCode* AbstractInterpreter::compile_worker() {
             case NOP: break;
             case ROT_TWO: 
             {
-                auto tmp = m_stack[m_stack.size() - 1];
-                m_stack[m_stack.size() - 1] = m_stack[m_stack.size() - 2];
-                m_stack[m_stack.size() - 2] = tmp;
+                std::swap(m_stack[m_stack.size() - 1], m_stack[m_stack.size() - 2]);
 
+                if (!should_box(opcodeIndex)) {
+                    auto stackInfo = get_stack_info(opcodeIndex);
+                    auto top_kind = stackInfo[stackInfo.size() - 1].Value->kind();
+                    auto second_kind = stackInfo[stackInfo.size() - 2].Value->kind();
+
+                    if (top_kind == AVK_Float && second_kind == AVK_Float) {
+                        m_comp->emit_rot_two(LK_Float);
+                        break;
+                    } else if (top_kind == AVK_Integer && second_kind == AVK_Integer) {
+                        m_comp->emit_rot_two(LK_Int);
+                        break;
+                    }
+                }
                 m_comp->emit_rot_two();
                 break;
             }
             case ROT_THREE: 
             {
-                bool top = m_stack.back();
-                m_stack.pop_back();
-                bool second = m_stack.back();
-                m_stack.pop_back();
-                bool third = m_stack.back();
-                m_stack.pop_back();
+                std::swap(m_stack[m_stack.size() - 1], m_stack[m_stack.size() - 2]);
+                std::swap(m_stack[m_stack.size() - 2], m_stack[m_stack.size() - 3]);
 
-                m_stack.push_back(top);
-                m_stack.push_back(third);
-                m_stack.push_back(second);
+                if (!should_box(opcodeIndex)) {
+                    auto stackInfo = get_stack_info(opcodeIndex);
+                    auto top_kind = stackInfo[stackInfo.size() - 1].Value->kind();
+                    auto second_kind = stackInfo[stackInfo.size() - 2].Value->kind();
+                    auto third_kind = stackInfo[stackInfo.size() - 3].Value->kind();
 
+                    if (top_kind == AVK_Float && second_kind == AVK_Float && third_kind == AVK_Float) {
+                        m_comp->emit_rot_three(LK_Float);
+                        break;
+                    }
+                    else if (top_kind == AVK_Integer && second_kind == AVK_Integer && third_kind == AVK_Integer) {
+                        m_comp->emit_rot_three(LK_Int);
+                        break;
+                    }
+                }
                 m_comp->emit_rot_three();
                 break;
             }
@@ -2025,12 +2227,24 @@ JittedCode* AbstractInterpreter::compile_worker() {
                 build_tuple(oparg);
                 inc_stack();
                 break;
+            case BUILD_TUPLE_UNPACK:
+                extend_tuple(oparg);
+                inc_stack();
+                break;
             case BUILD_LIST:
                 build_list(oparg);
                 inc_stack();
                 break;
+            case BUILD_LIST_UNPACK:
+                extend_list(oparg);
+                inc_stack();
+                break;
             case BUILD_MAP:
                 build_map(oparg);
+                inc_stack();
+                break;
+            case BUILD_MAP_UNPACK:
+                extend_map(oparg);
                 inc_stack();
                 break;
             case STORE_SUBSCR:
@@ -2052,6 +2266,10 @@ JittedCode* AbstractInterpreter::compile_worker() {
                 inc_stack();
                 break;
             case BUILD_SET: build_set(oparg); break;
+            case BUILD_SET_UNPACK:
+                extend_set(oparg);
+                inc_stack();
+                break;
             case UNARY_POSITIVE: unary_positive(opcodeIndex); break;
             case UNARY_NEGATIVE: unary_negative(opcodeIndex); break;
             case UNARY_NOT: unary_not(curByte); break;
@@ -2094,7 +2312,51 @@ JittedCode* AbstractInterpreter::compile_worker() {
                     auto two = stackInfo[stackInfo.size() - 2];
 
                     // Currently we only optimize floating point numbers..
-                    if (one.Value->kind() == AVK_Float && two.Value->kind() == AVK_Float) {
+                    if (one.Value->kind() == AVK_Integer && two.Value->kind() == AVK_Float) {
+                        // tagged ints might be objects, so we track the stack kind as object
+                        _ASSERTE(m_stack[m_stack.size() - 1] == STACK_KIND_OBJECT); 
+                        _ASSERTE(m_stack[m_stack.size() - 2] == STACK_KIND_VALUE);
+
+                        if (byte == BINARY_AND || byte == INPLACE_AND || byte == INPLACE_OR || byte == BINARY_OR ||
+                            byte == INPLACE_LSHIFT || byte == BINARY_LSHIFT || byte == INPLACE_RSHIFT || byte == BINARY_RSHIFT ||
+                            byte == INPLACE_XOR || byte == BINARY_XOR) {
+                            char buf[100];
+                            sprintf_s(buf, "unsupported operand type(s) for %s: 'float' and 'int'", op_to_string(byte));
+                            m_comp->emit_pyerr_setstring(PyExc_TypeError, buf);
+                            branch_raise();
+                            break;
+                        } else if (byte == INPLACE_TRUE_DIVIDE || byte == BINARY_TRUE_DIVIDE ||
+                            byte == INPLACE_FLOOR_DIVIDE || byte == BINARY_FLOOR_DIVIDE ||
+                            byte == INPLACE_MODULO || byte == BINARY_MODULO) {
+                            // Check and see if the right hand side is zero, and if so, raise
+                            // an exception.
+                            m_comp->emit_dup();
+                            m_comp->emit_unary_not_tagged_int_push_bool();
+                            auto noErr = m_comp->emit_define_label();
+                            m_comp->emit_branch(BranchFalse, noErr);
+                            m_comp->emit_pyerr_setstring(PyExc_ZeroDivisionError, "float division by zero");
+                            branch_raise();
+
+                            m_comp->emit_mark_label(noErr);
+                        }
+
+                        // Convert int to float
+                        auto floatValue = m_comp->emit_define_local(LK_Float);
+                        m_comp->emit_load_local_addr(floatValue);
+                        m_comp->emit_tagged_int_to_float();
+
+                        dec_stack(1);   // we've consumed the int
+
+                        int_error_check("int too big for float");
+
+                        m_comp->emit_load_and_free_local(floatValue);
+
+                        m_comp->emit_binary_float(byte);
+
+                        dec_stack(1);
+                        inc_stack(1, STACK_KIND_VALUE);
+                        break;
+                    } else if (one.Value->kind() == AVK_Float && two.Value->kind() == AVK_Float) {
                         _ASSERTE(m_stack[m_stack.size() - 1] == STACK_KIND_VALUE);
                         _ASSERTE(m_stack[m_stack.size() - 2] == STACK_KIND_VALUE);
 
@@ -2501,13 +2763,13 @@ JittedCode* AbstractInterpreter::compile_worker() {
                     // anyway.
                     if (m_offsetStack.find(curByte) != m_offsetStack.end()) {
                         dec_stack(3);
-                        free_iter_locals_on_exception();
-                        m_comp->emit_restore_err();
+free_iter_locals_on_exception();
+m_comp->emit_restore_err();
 
-                        unwind_eh(curBlock.CurrentHandler, m_blockStack.back().CurrentHandler);
-                        clean_stack_for_reraise();
+unwind_eh(curBlock.CurrentHandler, m_blockStack.back().CurrentHandler);
+clean_stack_for_reraise();
 
-                        m_comp->emit_branch(BranchAlways, get_ehblock().ReRaise);
+m_comp->emit_branch(BranchAlways, get_ehblock().ReRaise);
                     }
                 }
             }
@@ -2546,58 +2808,79 @@ JittedCode* AbstractInterpreter::compile_worker() {
         }
 
 
-    // for each exception handler we need to load the exception
-    // information onto the stack, and then branch to the correct
-    // handler.  When we take an error we'll branch down to this
-    // little stub and then back up to the correct handler.
-    if (m_allHandlers.size() != 0) {
-        // TODO: Unify the first handler with this loop
-        for (size_t i = 1; i < m_allHandlers.size(); i++) {
-            auto& handler = m_allHandlers[i];
+        // for each exception handler we need to load the exception
+        // information onto the stack, and then branch to the correct
+        // handler.  When we take an error we'll branch down to this
+        // little stub and then back up to the correct handler.
+        if (m_allHandlers.size() != 0) {
+            // TODO: Unify the first handler with this loop
+            for (size_t i = 1; i < m_allHandlers.size(); i++) {
+                auto& handler = m_allHandlers[i];
 
-            emit_raise_and_free(i);
+                emit_raise_and_free(i);
 
-            if (handler.ErrorTarget.m_index != -1) {
-                m_comp->emit_prepare_exception(
-                    handler.ExVars.PrevExc,
-                    handler.ExVars.PrevExcVal,
-                    handler.ExVars.PrevTraceback
-                );
-                if (handler.Flags & EHF_TryFinally) {
-                    auto tmpEx = m_comp->emit_spill();
+                if (handler.ErrorTarget.m_index != -1) {
+                    m_comp->emit_prepare_exception(
+                        handler.ExVars.PrevExc,
+                        handler.ExVars.PrevExcVal,
+                        handler.ExVars.PrevTraceback
+                        );
+                    if (handler.Flags & EHF_TryFinally) {
+                        auto tmpEx = m_comp->emit_spill();
 
-                    auto targetHandler = i;
-                    while (m_allHandlers[targetHandler].BackHandler != -1) {
-                        targetHandler = m_allHandlers[targetHandler].BackHandler;
+                        auto targetHandler = i;
+                        while (m_allHandlers[targetHandler].BackHandler != -1) {
+                            targetHandler = m_allHandlers[targetHandler].BackHandler;
+                        }
+                        auto& vars = m_allHandlers[targetHandler].ExVars;
+
+                        m_comp->emit_store_local(vars.FinallyValue);
+                        m_comp->emit_store_local(vars.FinallyTb);
+
+                        m_comp->emit_load_and_free_local(tmpEx);
                     }
-                    auto& vars = m_allHandlers[targetHandler].ExVars;
-
-                    m_comp->emit_store_local(vars.FinallyValue);
-                    m_comp->emit_store_local(vars.FinallyTb);
-
-                    m_comp->emit_load_and_free_local(tmpEx);
+                    m_comp->emit_branch(BranchAlways, handler.ErrorTarget);
                 }
-                m_comp->emit_branch(BranchAlways, handler.ErrorTarget);
             }
         }
+
+        // label we branch to for error handling when we have no EH handlers, return NULL.
+        emit_raise_and_free(0);
+
+        m_comp->emit_null();
+        auto finalRet = m_comp->emit_define_label();
+        m_comp->emit_branch(BranchAlways, finalRet);
+
+        m_comp->emit_mark_label(m_retLabel);
+        m_comp->emit_load_local(m_retValue);
+
+        m_comp->emit_mark_label(finalRet);
+        m_comp->emit_pop_frame();
+
+        m_comp->emit_ret();
+
+        return m_comp->emit_compile();
+}
+
+const char* AbstractInterpreter::op_to_string(int op) {
+    switch(op) {
+        case BINARY_AND: 
+        case INPLACE_AND:
+            return "&";
+        case  INPLACE_OR:
+        case  BINARY_OR:
+            return "|";
+        case  INPLACE_LSHIFT: 
+        case  BINARY_LSHIFT: 
+            return "<<";
+        case  INPLACE_RSHIFT:
+        case  BINARY_RSHIFT:
+            return ">>";
+        case  INPLACE_XOR:
+        case  BINARY_XOR:
+            return "^";
     }
-
-    // label we branch to for error handling when we have no EH handlers, return NULL.
-    emit_raise_and_free(0);
-
-    m_comp->emit_null();
-    auto finalRet = m_comp->emit_define_label();
-    m_comp->emit_branch(BranchAlways, finalRet);
-
-    m_comp->emit_mark_label(m_retLabel);
-    m_comp->emit_load_local(m_retValue);
-
-    m_comp->emit_mark_label(finalRet);
-    m_comp->emit_pop_frame();
-
-    m_comp->emit_ret();
-
-    return m_comp->emit_compile();
+    return "?";
 }
 
 void AbstractInterpreter::emit_raise_and_free(size_t handlerIndex) {

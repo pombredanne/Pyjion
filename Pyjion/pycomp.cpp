@@ -29,9 +29,7 @@
 #include <frameobject.h>
 #include <opcode.h>
 
-HRESULT __stdcall GetCORSystemDirectoryInternal(__out_ecount_part_opt(cchBuffer, *pdwLength) LPWSTR pBuffer,
-    DWORD  cchBuffer,
-    __out_opt DWORD* pdwLength) {
+HRESULT __stdcall GetCORSystemDirectoryInternal(SString& pbuffer) {
     printf("get cor system\n");
     return S_OK;
 }
@@ -77,6 +75,8 @@ IExecutionEngine* __stdcall IEE() {
     return &g_execEngine;
 }
 
+CCorJitHost g_jitHost;
+
 void CeeInit() {
     CoreClrCallbacks cccallbacks;
     cccallbacks.m_hmodCoreCLR = (HINSTANCE)GetModuleHandleW(NULL);
@@ -88,6 +88,8 @@ void CeeInit() {
     // TODO: We should re-enable contracts and handle exceptions from OOM
     // and just fail the whole compilation if we hit that.  Right now we
     // just leak an exception out across the JIT boundary.
+
+	jitStartup(&g_jitHost);
 #if _DEBUG
     DisableThrowCheck();
 #endif
@@ -258,9 +260,9 @@ void PythonCompiler::emit_store_fast(int local) {
     decref();
 }
 
-void PythonCompiler::emit_rot_two() {
-    auto top = m_il.define_local(Parameter(CORINFO_TYPE_NATIVEINT));
-    auto second = m_il.define_local(Parameter(CORINFO_TYPE_NATIVEINT));
+void PythonCompiler::emit_rot_two(LocalKind kind) {
+    auto top = m_il.define_local(Parameter(to_clr_type(kind)));
+    auto second = m_il.define_local(Parameter(to_clr_type(kind)));
 
     m_il.st_loc(top);
     m_il.st_loc(second);
@@ -272,10 +274,10 @@ void PythonCompiler::emit_rot_two() {
     m_il.free_local(second);
 }
 
-void PythonCompiler::emit_rot_three() {
-    auto top = m_il.define_local(Parameter(CORINFO_TYPE_NATIVEINT));
-    auto second = m_il.define_local(Parameter(CORINFO_TYPE_NATIVEINT));
-    auto third = m_il.define_local(Parameter(CORINFO_TYPE_NATIVEINT));
+void PythonCompiler::emit_rot_three(LocalKind kind) {
+    auto top = m_il.define_local(Parameter(to_clr_type(kind)));
+    auto second = m_il.define_local(Parameter(to_clr_type(kind)));
+    auto third = m_il.define_local(Parameter(to_clr_type(kind)));
 
     m_il.st_loc(top);
     m_il.st_loc(second);
@@ -370,9 +372,21 @@ void PythonCompiler::emit_list_store(size_t argCnt) {
     m_il.free_local(listItems);
 }
 
+void PythonCompiler::emit_list_extend() {
+    m_il.emit_call(METHOD_EXTENDLIST_TOKEN);
+}
+
+void PythonCompiler::emit_list_to_tuple() {
+    m_il.emit_call(METHOD_LISTTOTUPLE_TOKEN);
+}
+
 void PythonCompiler::emit_new_set() {
     m_il.load_null();
     m_il.emit_call(METHOD_PYSET_NEW);
+}
+
+void PythonCompiler::emit_set_extend() {
+    m_il.emit_call(METHOD_SETUPDATE_TOKEN);
 }
 
 void PythonCompiler::emit_new_dict(size_t size) {
@@ -382,6 +396,10 @@ void PythonCompiler::emit_new_dict(size_t size) {
 
 void PythonCompiler::emit_dict_store() {
     m_il.emit_call(METHOD_STOREMAP_TOKEN);
+}
+
+void PythonCompiler::emit_map_extend() {
+    m_il.emit_call(METHOD_DICTUPDATE_TOKEN);
 }
 
 void PythonCompiler::emit_is_true() {
@@ -658,6 +676,10 @@ void PythonCompiler::emit_load_local(Local local) {
     m_il.ld_loc(local);
 }
 
+void PythonCompiler::emit_load_local_addr(Local local) {
+    m_il.ld_loca(local);
+}
+
 void PythonCompiler::emit_pop() {
     m_il.pop();
 }
@@ -727,6 +749,16 @@ void PythonCompiler::emit_prepare_exception(Local prevExc, Local prevExcVal, Loc
 
 void PythonCompiler::emit_int(int value) {
     m_il.ld_i4(value);
+}
+
+void PythonCompiler::emit_unbox_int_tagged() {
+    m_il.emit_call(METHOD_UNBOX_LONG_TAGGED);
+}
+
+void PythonCompiler::emit_unbox_float() {
+    m_il.ld_i(offsetof(PyFloatObject, ob_fval));
+    m_il.add();
+    m_il.ld_ind_r8();
 }
 
 void PythonCompiler::emit_tagged_int(ssize_t value) {
@@ -1093,6 +1125,10 @@ JittedCode* PythonCompiler::emit_compile() {
 
 }
 
+void PythonCompiler::emit_tagged_int_to_float() {
+    m_il.emit_call(METHOD_INT_TO_FLOAT);
+}
+
 /************************************************************************
 * End Compiler interface implementation
 */
@@ -1127,7 +1163,10 @@ GLOBAL_METHOD(METHOD_BINARY_XOR_TOKEN, &PyJit_BinaryXor, CORINFO_TYPE_NATIVEINT,
 GLOBAL_METHOD(METHOD_BINARY_OR_TOKEN, &PyJit_BinaryOr, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
 
 GLOBAL_METHOD(METHOD_PYLIST_NEW, &PyList_New, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_NATIVEINT));
+GLOBAL_METHOD(METHOD_EXTENDLIST_TOKEN, &PyJit_ExtendList, CORINFO_TYPE_INT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
+GLOBAL_METHOD(METHOD_LISTTOTUPLE_TOKEN, &PyJit_ListToTuple, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_NATIVEINT));
 GLOBAL_METHOD(METHOD_STOREMAP_TOKEN, &PyJit_StoreMap, CORINFO_TYPE_INT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
+GLOBAL_METHOD(METHOD_DICTUPDATE_TOKEN, &PyJit_DictUpdate, CORINFO_TYPE_INT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
 GLOBAL_METHOD(METHOD_STORESUBSCR_TOKEN, &PyJit_StoreSubscr, CORINFO_TYPE_INT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
 GLOBAL_METHOD(METHOD_DELETESUBSCR_TOKEN, &PyJit_DeleteSubscr, CORINFO_TYPE_INT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
 
@@ -1197,6 +1236,7 @@ GLOBAL_METHOD(METHOD_UNARY_INVERT, &PyJit_UnaryInvert, CORINFO_TYPE_NATIVEINT, P
 
 GLOBAL_METHOD(METHOD_LIST_APPEND_TOKEN, &PyJit_ListAppend, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
 GLOBAL_METHOD(METHOD_SET_ADD_TOKEN, &PyJit_SetAdd, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
+GLOBAL_METHOD(METHOD_SETUPDATE_TOKEN, &PyJit_UpdateSet, CORINFO_TYPE_INT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
 
 GLOBAL_METHOD(METHOD_MAP_ADD_TOKEN, &PyJit_MapAdd, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
 
@@ -1266,6 +1306,7 @@ GLOBAL_METHOD(METHOD_FLOAT_MODULUS_TOKEN, static_cast<double(*)(double, double)>
 GLOBAL_METHOD(METHOD_FLOAT_FROM_DOUBLE, PyFloat_FromDouble, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_DOUBLE));
 GLOBAL_METHOD(METHOD_BOOL_FROM_LONG, PyBool_FromLong, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_INT));
 GLOBAL_METHOD(METHOD_BOX_TAGGED_PTR, PyJit_BoxTaggedPointer, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_NATIVEINT));
+GLOBAL_METHOD(METHOD_UNBOX_LONG_TAGGED, PyJit_UnboxInt_Tagged, CORINFO_TYPE_NATIVEINT, Parameter(CORINFO_TYPE_NATIVEINT));
 
 GLOBAL_METHOD(METHOD_PYERR_SETSTRING, PyErr_SetString, CORINFO_TYPE_VOID, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT));
 
@@ -1292,3 +1333,5 @@ GLOBAL_METHOD(METHOD_NOT_EQUALS_INT_TOKEN, PyJit_NotEquals_Int, CORINFO_TYPE_BOO
 GLOBAL_METHOD(METHOD_GREATER_THAN_INT_TOKEN, PyJit_GreaterThan_Int, CORINFO_TYPE_BOOL, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT))
 GLOBAL_METHOD(METHOD_GREATER_THAN_EQUALS_INT_TOKEN, PyJit_GreaterThanEquals_Int, CORINFO_TYPE_BOOL, Parameter(CORINFO_TYPE_NATIVEINT), Parameter(CORINFO_TYPE_NATIVEINT))
 GLOBAL_METHOD(METHOD_PERIODIC_WORK, _PyEval_PeriodicWork, CORINFO_TYPE_BOOL)
+
+GLOBAL_METHOD(METHOD_INT_TO_FLOAT, PyJit_Int_ToFloat, CORINFO_TYPE_BOOL, Parameter(CORINFO_TYPE_DOUBLE), Parameter(CORINFO_TYPE_NATIVEINT))

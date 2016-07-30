@@ -23,8 +23,8 @@
 *
 */
 
-#ifndef __CEE_H__
-#define __CEE_H__
+#ifndef CEE_H
+#define CEE_H
 
 #define FEATURE_NO_HOST
 #define USE_STL
@@ -55,6 +55,7 @@ public:
     HANDLE m_codeHeap, m_heap;
     DWORD m_tlsIndex;
     PTLS_CALLBACK_FUNCTION* m_callbacks;
+
 
     CExecutionEngine() {
         m_codeHeap = HeapCreate(HEAP_CREATE_ENABLE_EXECUTE, 0, 0);
@@ -357,6 +358,31 @@ private:
     ULONG m_refCount;
     HANDLE m_executableHeap;
 };  // interface IExecutionEngine
+
+class CCorJitHost : public ICorJitHost {
+	void * allocateMemory(size_t size, bool usePageAllocator = false)
+	{
+		return nullptr;
+	}
+
+	void freeMemory(void * block, bool usePageAllocator = false)
+	{
+	}
+
+	int getIntConfigValue(const wchar_t * name, int defaultValue)
+	{
+		return defaultValue;
+	}
+
+	const wchar_t * getStringConfigValue(const wchar_t * name)
+	{
+		return nullptr;
+	}
+
+	void freeStringConfigValue(const wchar_t * value)
+	{
+	}
+};
 
 void CeeInit();
 

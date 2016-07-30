@@ -23,8 +23,8 @@
 *
 */
 
-#ifndef __IPYCOMP_H__
-#define __IPYCOMP_H__
+#ifndef IPYCOMP_H
+#define IPYCOMP_H
 
 class Local {
 public:
@@ -82,8 +82,8 @@ class IPythonCompiler {
 public:
     /*****************************************************
      * Basic Python stack manipulations */
-    virtual void emit_rot_two() = 0;
-    virtual void emit_rot_three() = 0;
+    virtual void emit_rot_two(LocalKind kind = LK_Pointer) = 0;
+    virtual void emit_rot_three(LocalKind kind = LK_Pointer) = 0;
     // Pops the top value from the stack and decrements its refcount
     virtual void emit_pop_top() = 0;
     // Dups the top value on the stack (and bumps its ref count)
@@ -109,6 +109,12 @@ public:
     virtual void emit_float(double value) = 0;
     // Emits a unboxed tagged integer value onto the stack
     virtual void emit_tagged_int(ssize_t value) = 0;
+    // Takes a Python long off the stack and converts it to a tagged int, or leaves
+    // it as an object if the long doesn't fix in a tagged int.
+    virtual void emit_unbox_int_tagged() = 0;
+    // Takes a Python float off the stack and converts it to a native double
+    virtual void emit_unbox_float() = 0;
+
     // Emits an unboxed bool onto the stack
     virtual void emit_bool(bool value) = 0;
     // Emits a pointer value onto the stack
@@ -141,6 +147,8 @@ public:
     virtual void emit_store_local(Local local) = 0;
     // Loads the local onto the top of the stack
     virtual void emit_load_local(Local local) = 0;
+    // Loads the address of a local onto the top of the stack
+    virtual void emit_load_local_addr(Local local) = 0;
     // Loads a local onto the stack and makes the local available for re-use
     virtual void emit_load_and_free_local(Local local) = 0;
     // Defines a pointer local, optionally not pulling it from the cache of available locals
@@ -209,6 +217,8 @@ public:
     virtual void emit_new_tuple(size_t size) = 0;
     // Stores all of the values on the stack into a tuple
     virtual void emit_tuple_store(size_t size) = 0;
+    // Convert a list to a tuple
+    virtual void emit_list_to_tuple() = 0;
 
     // Creates a new list of the specified size
     virtual void emit_new_list(size_t argCnt) = 0;
@@ -216,9 +226,13 @@ public:
     virtual void emit_list_store(size_t argCnt) = 0;
     // Appends a single value to a list
     virtual void emit_list_append() = 0;
+    // Extends a list with a single iterable
+    virtual void emit_list_extend() = 0;
 
     // Creates a new set
     virtual void emit_new_set() = 0;
+    // Extends a set with a single iterable
+    virtual void emit_set_extend() = 0;
     // Adds a single item to a set
     virtual void emit_set_add() = 0;
 
@@ -228,6 +242,8 @@ public:
     virtual void emit_dict_store() = 0;
     // Adds a single key/value pair to a dict
     virtual void emit_map_add() = 0;
+    // Extends a map by another mapping
+    virtual void emit_map_extend() = 0;
 
     // Creates a slice object from values on the stack
     virtual void emit_build_slice() = 0;
@@ -316,6 +332,8 @@ public:
     virtual void emit_binary_object(int opcode) = 0;
 
     virtual void emit_binary_tagged_int(int opcode) = 0;
+
+    virtual void emit_tagged_int_to_float() = 0;
 
     // Does an in/contains check and pushes a Python object onto the stack as the result, or NULL if there was an error
     virtual void emit_in() = 0;

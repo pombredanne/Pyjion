@@ -23,8 +23,8 @@
 *
 */
 
-#ifndef __ILGEN_H__
-#define __ILGEN_H__
+#ifndef ILGEN_H
+#define ILGEN_H
 
 #define FEATURE_NO_HOST
 #define USE_STL
@@ -201,6 +201,10 @@ public:
 
     void ld_ind_i4() {
         push_back(CEE_LDIND_I4);
+    }
+
+    void ld_ind_r8() {
+        push_back(CEE_LDIND_R8);
     }
 
     void branch(BranchType branchType, Label label) {

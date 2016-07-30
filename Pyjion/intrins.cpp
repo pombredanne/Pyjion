@@ -327,6 +327,13 @@ PyObject* PyJit_SetAdd(PyObject* set, PyObject* value) {
     return set;
 }
 
+int PyJit_UpdateSet(PyObject* set, PyObject* value) {
+    assert(PyAnySet_CheckExact(set));
+    auto res = _PySet_Update(set, value);
+    Py_DECREF(value);
+    return res;
+}
+
 PyObject* PyJit_MapAdd(PyObject*map, PyObject* value, PyObject*key) {
     int err = PyDict_SetItem(map, key, value);  /* v[w] = u */
     Py_DECREF(value);
@@ -1192,11 +1199,44 @@ PyObject* PyJit_LoadClassDeref(PyFrameObject* frame, size_t oparg) {
     return value;
 }
 
+int PyJit_ExtendList(PyObject *list, PyObject *extension) {
+    assert(PyList_CheckExact(list));
+    auto res = _PyList_Extend((PyListObject*)list, extension);
+    Py_DECREF(extension);
+    int flag = 1;  // Assume error unless we prove to ourselves otherwise.
+    if (res == Py_None) {
+        flag = 0;
+        Py_DECREF(res);
+    }
+
+    return flag;
+}
+
+PyObject* PyJit_ListToTuple(PyObject *list) {
+    PyObject* res = PyList_AsTuple(list);
+    Py_DECREF(list);
+    return res;
+}
+
 int PyJit_StoreMap(PyObject *key, PyObject *value, PyObject* map) {
     assert(PyDict_CheckExact(map));
     auto res = PyDict_SetItem(map, key, value);
     Py_DECREF(key);
     Py_DECREF(value);
+    return res;
+}
+
+int PyJit_DictUpdate(PyObject* dict, PyObject* other) {
+    assert(PyDict_CheckExact(dict));
+    auto res = PyDict_Update(dict, other);
+    if (res < 0) {
+        if (PyErr_ExceptionMatches(PyExc_AttributeError)) {
+            PyErr_Format(PyExc_TypeError,
+                "'%.200s' object is not a mapping",
+                other->ob_type->tp_name);
+        }
+    }
+    Py_DECREF(other);
     return res;
 }
 
@@ -2009,13 +2049,13 @@ PyObject* PyJit_IsNot(PyObject* lhs, PyObject* rhs) {
     return res;
 }
 
-bool PyJit_Is_Bool(PyObject* lhs, PyObject* rhs) {
+int PyJit_Is_Bool(PyObject* lhs, PyObject* rhs) {
     Py_DECREF(lhs);
     Py_DECREF(rhs);
     return lhs == rhs;
 }
 
-bool PyJit_IsNot_Bool(PyObject* lhs, PyObject* rhs) {
+int PyJit_IsNot_Bool(PyObject* lhs, PyObject* rhs) {
     Py_DECREF(lhs);
     Py_DECREF(rhs);
     return lhs != rhs;
@@ -2080,6 +2120,15 @@ inline bool LongOverflow(PyObject* obj, tagged_ptr* value) {
     int overflow;
     *value = AS_LONG_AND_OVERFLOW(obj, &overflow);
     return overflow || !can_tag(*value);
+}
+
+PyObject* PyJit_UnboxInt_Tagged(PyObject* value) {
+    int overflow;
+    auto intValue = AS_LONG_AND_OVERFLOW(value, &overflow);
+    if (overflow || !can_tag(intValue)) {
+        return value;
+    }
+    return TAG_IT(intValue);
 }
 
 inline PyObject* PyJit_Tagged_Add(tagged_ptr left, tagged_ptr right) {
@@ -2311,7 +2360,7 @@ PyObject* PyJit_BoxTaggedPointer(PyObject* value) {
 }																						\
 
 #define TAGGED_COMPARE(name, cmp) \
-	bool PyJit_##name##_Int(PyObject *left, PyObject *right) {							\
+int PyJit_##name##_Int(PyObject *left, PyObject *right) {							\
 	tagged_ptr leftI = (tagged_ptr)left;												\
 	tagged_ptr rightI = (tagged_ptr)right;												\
 	size_t tempNumber[NUMBER_SIZE];														\
@@ -2360,10 +2409,10 @@ TAGGED_COMPARE(Equals, == )
 TAGGED_COMPARE(NotEquals, != )
 TAGGED_COMPARE(GreaterThan, > )
 TAGGED_COMPARE(LessThan, < )
-    TAGGED_COMPARE(GreaterThanEquals, >= )
-    TAGGED_COMPARE(LessThanEquals, <= )
+TAGGED_COMPARE(GreaterThanEquals, >= )
+TAGGED_COMPARE(LessThanEquals, <= )
 
-    PyObject* PyJit_UnaryNegative_Int(PyObject*value) {
+PyObject* PyJit_UnaryNegative_Int(PyObject*value) {
     tagged_ptr valueI = (tagged_ptr)value;
     size_t tempNumber[NUMBER_SIZE];
 
@@ -2380,7 +2429,7 @@ TAGGED_COMPARE(LessThan, < )
     return PyNumber_Negative(value);
 }
 
-bool PyJit_UnaryNot_Int_PushBool(PyObject*value) {
+int PyJit_UnaryNot_Int_PushBool(PyObject*value) {
     tagged_ptr valueI = (tagged_ptr)value;
     if (IS_TAGGED(valueI)) {
         auto untagged = UNTAG_IT(valueI);
@@ -2388,4 +2437,16 @@ bool PyJit_UnaryNot_Int_PushBool(PyObject*value) {
     }
 
     return Py_SIZE(value) == 0;
+}
+
+int PyJit_Int_ToFloat(PyObject* in, double*out) {
+    tagged_ptr inI = (tagged_ptr)in;
+    if (IS_TAGGED(inI)) {
+        INIT_TMP_NUMBER(tmpIn, UNTAG_IT(inI));
+        *out = PyLong_AsDouble(tmpIn);      
+    }
+    else {
+        *out = PyLong_AsDouble(in);
+    }
+    return *out == -1.0 && PyErr_Occurred();
 }

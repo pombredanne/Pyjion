@@ -23,8 +23,8 @@
 *
 */
 
-#ifndef __JITINFO_H__
-#define __JITINFO_H__
+#ifndef JITINFO_H
+#define JITINFO_H
 
 
 #define FEATURE_NO_HOST
@@ -82,9 +82,7 @@ public:
         if (m_dataAddr != nullptr) {
             ::GlobalFree(m_dataAddr);
         }
-        if (m_module != nullptr) {
-            delete m_module;
-        }
+        delete m_module;
     }
 
     void* get_code_addr() {
@@ -274,7 +272,6 @@ public:
     }
 
     virtual WORD getRelocTypeHint(void * target) {
-        printf("getRelocTypeHint\r\n");
         return -1;
     }
 
@@ -836,7 +833,8 @@ public:
     // If a method's attributes have (getMethodAttribs) CORINFO_FLG_INTRINSIC set,
     // getIntrinsicID() returns the intrinsic ID.
     virtual CorInfoIntrinsics getIntrinsicID(
-        CORINFO_METHOD_HANDLE       method
+        CORINFO_METHOD_HANDLE       method,
+		bool * pMustExpand = NULL
         ) {
         printf("getIntrinsicID\r\n"); return CORINFO_INTRINSIC_Object_GetType;
     }
@@ -1908,7 +1906,6 @@ public:
     virtual unsigned getMethodHash(
         CORINFO_METHOD_HANDLE       ftn         /* IN */
         ) {
-        printf("getMethodHash\r\n");
         return 0;
     }
 
@@ -1960,6 +1957,16 @@ public:
         printf("freeStringConfigValue\r\n");
     }
 #endif // RYUJIT_CTPBUILD
+
+
+	void CorJitInfo::getAddressOfPInvokeTarget(CORINFO_METHOD_HANDLE method, CORINFO_CONST_LOOKUP * pLookup)
+	{
+	}
+
+	DWORD CorJitInfo::getJitFlags(CORJIT_FLAGS * flags, DWORD sizeInBytes)
+	{
+		return 0;
+	}
 
 };
 
